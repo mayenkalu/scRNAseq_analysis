@@ -1,0 +1,431 @@
+---
+title: "integrated_clustering"
+author: "Mayen Kalu(Inim)"
+date: "2022-09-25"
+output: html_document
+---
+The `scRNAseq` datasets (published by Yang _et al_., 2021) with accession number GSE173193, were downloaded from GEO NCBI.
+This analysis is associated to a CZI project **Nigerian Maternal Atlas to Improve Birth Outcomes**.
+This part is my part contribution to the project.
+## Load package dependencies
+```{r}
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(ggplot2)
+library(ggrepel)
+library(Matrix)
+library(BiocManager)
+library(GEOquery)
+library(pheatmap)
+```
+
+## Load count data
+```{r}
+B1.raw <- read.csv(file = "../Integrated_data_on_RBC/GSE149938_bm/umi_matrix.csv")
+B1.data <- Matrix(t(as.matrix(B1.raw)))
+colnames(B1.data) %>%  head
+dim(B1.data)
+B1.meta <- GEOquery::getGEO("GSE149938", destdir = "../Integrated_data_on_RBC/GSE149938_bm/")
+B1.meta
+
+P1.data <- Read10X(data.dir = "../Integrated_data_on_RBC/GSE184916_pb_d1/")
+P1.meta <- GEOquery::getGEO("GSE184916", destdir = "../Integrated_data_on_RBC/GSE184916_pb_d1/")
+P1.meta
+
+P2.data <- Read10X(data.dir = "../Integrated_data_on_RBC/GSE184916_pb_d15/")
+P2.meta <- GEOquery::getGEO("GSE184916", destdir = "../Integrated_data_on_RBC/GSE184916_pb_d15/")
+P2.meta
+```
+
+## Create seurat object
+## for bone marrow data
+```{r}
+b1_obj <- CreateSeuratObject(B1.data, project = "e_BM", assay = "RNA",
+  min.cells = 0, min.features = 0, names.field = 0,
+  names.delim = "_", meta.data = NULL)
+b1_obj
+VlnPlot(b1_obj, features = "nFeature_RNA")
+
+eBM <- subset(b1_obj, subset = HBB > 0)
+eBM
+view(eBM)
+VlnPlot(eBM, features = "nFeature_RNA")
+```
+
+## for peripheral blood data
+```{r}
+ePB <- CreateSeuratObject(P1.data, project = "e_PB")
+ePB
+view(ePB)
+VlnPlot(ePB, features = "nFeature_RNA")
+```
+
+## QC metrics
+```{r}
+eBM[["percent.mt"]]  <- PercentageFeatureSet(eBM, pattern = "^MT-")
+eBM[["percent.rbp"]] <- PercentageFeatureSet(eBM, pattern = "^RP[SL]")
+
+ePB[["percent.mt"]]  <- PercentageFeatureSet(ePB, pattern = "^MT-")
+ePB[["percent.rbp"]] <- PercentageFeatureSet(ePB, pattern = "^RP[SL]")
+```
+
+## Visualise QC metrics
+```{r}
+VlnPlot(eBM, features = c("nFeature_RNA","nCount_RNA","percent.mt","percent.rbp"), ncol = 4)
+VlnPlot(ePB, features = c("nFeature_RNA","nCount_RNA","percent.mt","percent.rbp"), ncol = 4)
+
+plot1 <- FeatureScatter(eBM, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2 <- FeatureScatter(eBM, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot3 <- FeatureScatter(eBM, feature1 = "nCount_RNA", feature2 = "percent.rbp")
+plot1 + plot2 + plot3
+
+plot11 <- FeatureScatter(ePB, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot12 <- FeatureScatter(ePB, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot13 <- FeatureScatter(ePB, feature1 = "nCount_RNA", feature2 = "percent.rbp")
+plot11 + plot12 + plot13
+```
+
+## No filtering.............
+
+## Comparing the genes names
+```{r}
+table(rownames(ePB) %in% rownames(eBM))
+table(rownames(eBM) %in% rownames(ePB))
+```
+
+## Integration using Seurat v3
+## Create a list/column
+```{r}
+phase <- list()
+phase[["erythroids_bone_marrow"]] <- eBM
+phase[["erythroids_peripheral_blood"]] <- ePB
+
+for (i in 1:length(phase)) {
+  phase[[i]] <- NormalizeData(phase[[i]], verbose = F)
+  phase[[i]] <- FindVariableFeatures(phase[[i]], selection.method = "vst", nfeatures = 2000, verbose = F)
+}
+```
+
+## Integration....
+```{r}
+rbc_anchors  <- FindIntegrationAnchors(object.list = phase, dims = 1:40)
+rbc_seurat   <- IntegrateData(anchorset = rbc_anchors, dims = 1:40)
+```
+
+## Standard processing steps BEFORE INTEGRATION
+## This will be carrying out basic processing steps on un-integrated data. 
+## This will be compared to the integrated data.
+```{r}
+DefaultAssay(rbc_seurat) <- "RNA"
+
+rbc_seurat <- NormalizeData(rbc_seurat)
+rbc_seurat <- FindVariableFeatures(rbc_seurat, selection.method = "vst", nfeatures = 2000)
+
+top10 <- head(VariableFeatures(rbc_seurat), 10)
+plot4 <- VariableFeaturePlot(rbc_seurat)
+plot5 <- LabelPoints(plot = plot4, points = top10, repel = TRUE)
+plot4
+plot5
+rbc_seurat <- ScaleData(rbc_seurat)
+rbc_seurat <- RunPCA(rbc_seurat, npcs = 40)
+rbc_seurat <- RunTSNE(rbc_seurat, reduction = "pca", dims = 1:18, check_duplicates = FALSE)
+```
+
+## Visualisation of the data before integration
+```{r}
+plot6 <- DimPlot(rbc_seurat, reduction = "tsne") + labs(title = "Before Integration: Red Blood Cells") + theme(plot.title = element_text(size=10)) 
+plot6
+```
+
+## Standard processing steps AFTER INTEGRATION
+```{r}
+DefaultAssay(rbc_seurat) <- "integrated"
+
+rbc_seurat <- ScaleData(rbc_seurat)
+rbc_seurat <- RunPCA(rbc_seurat, npcs = 40)
+rbc_seurat <- RunTSNE(rbc_seurat, reduction = "pca", dims = 1:17, check_duplicates = FALSE)
+```
+
+## Visualisation of the data after integration
+```{r}
+plot7 <- DimPlot(rbc_seurat, reduction = "tsne") + labs(title = "After Integration: Red Blood Cells" ) + theme(plot.title = element_text(size=10))
+plot8 <- DimPlot(rbc_seurat, reduction = "tsne", split.by = "ident") + NoLegend() 
+plot7
+plot8
+```
+
+## Clustering Analysis.............
+```{r}
+rbc_seurat <- FindNeighbors(rbc_seurat, dims = 1:17)
+rbc_seurat <- FindClusters(rbc_seurat, resolution = 0.5)
+plot9 <- DimPlot(rbc_seurat, reduction = "tsne", label = T, label.size = 3.5)
+plot9
+```
+
+## Visualise Distribution frequency
+## as table
+```{r}
+count_table <- table(rbc_seurat@meta.data$seurat_clusters, rbc_seurat@meta.data$orig.ident)
+count_table
+count_table1 <- as.data.frame(count_table)
+```
+
+## rename column names (headers)
+```{r}
+colnames(count_table1) <- c("Cluster", "Dataset","Fraction.of.Cells")
+colnames(count_table1)[1] <- "Cluster" 
+colnames(count_table1)[2] <- "Dataset" 
+colnames(count_table1)[3] <- "Fraction.of.Cells" 
+print(count_table1)
+```
+
+## Visualizations
+## as stacked bar plot
+```{r}
+plot_integrated_clusters <- ggplot(count_table1, 
+       aes(fill= Dataset, x=Fraction.of.Cells, y=Cluster)) + 
+  geom_bar(position="fill", stat="identity") 
+plot_integrated_clusters
+```
+
+## as pheatmap plot
+```{r}
+pheatmap(log10(count_table+10), color=viridis::viridis(100))
+```
+
+## Marker Identification
+```{r}
+all_markers <- FindAllMarkers(rbc_seurat, 
+                              only.pos = TRUE,  min.pct= 0.1, logfc.threshold = 0.0025)
+head(all_markers)
+```
+
+## lets look at the top markers (by log2FC) for each cluster
+```{r}
+top_markers <- all_markers %>% 
+  group_by(cluster) %>% 
+  top_n(n = 3, wt= avg_log2FC) %>% 
+  pull(gene) %>%
+  unique()
+top_markers
+```
+
+## Other Visualizations
+## HeatMap
+```{r}
+DoHeatmap(rbc_seurat, features = top_markers) 
+```
+## DotPlot
+```{r}
+DotPlot(rbc_seurat, features = top_markers, cols = c('purple', 'green')) + 
+  theme(axis.text = element_text(angle = 45, hjust = 1))
+```
+
+## Differential Expression of Genes
+```{r}
+C0.M <- FindMarkers(rbc_seurat, ident.1 = 0, min.pct= 0.1, logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C1.M <- FindMarkers(rbc_seurat, ident.1 = 1, min.pct= 0.1, logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C2.M <- FindMarkers(rbc_seurat, ident.1 = 2, min.pct= 0.1, logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C3.M <- FindMarkers(rbc_seurat, ident.1 = 3, min.pct= 0.1, logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C4.M <- FindMarkers(rbc_seurat, ident.1 = 4, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C5.M <- FindMarkers(rbc_seurat, ident.1 = 5, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C6.M <- FindMarkers(rbc_seurat, ident.1 = 6, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc",   only.pos = TRUE)
+C7.M <- FindMarkers(rbc_seurat, ident.1 = 7, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc",  only.pos = TRUE)
+C8.M <- FindMarkers(rbc_seurat, ident.1 = 8, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C9.M <- FindMarkers(rbc_seurat, ident.1 = 9, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C10.M <- FindMarkers(rbc_seurat, ident.1 = 10, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C11.M <- FindMarkers(rbc_seurat, ident.1 = 11, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc",  only.pos = TRUE)
+C12.M <- FindMarkers(rbc_seurat, ident.1 = 12, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C13.M <- FindMarkers(rbc_seurat, ident.1 = 13, min.pct= 0.1, logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C14.M <- FindMarkers(rbc_seurat, ident.1 = 14, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C15.M <- FindMarkers(rbc_seurat, ident.1 = 15, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C16.M <- FindMarkers(rbc_seurat, ident.1 = 16, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C17.M <- FindMarkers(rbc_seurat, ident.1 = 17, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C18.M <- FindMarkers(rbc_seurat, ident.1 = 18, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C19.M <- FindMarkers(rbc_seurat, ident.1 = 19, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C20.M <- FindMarkers(rbc_seurat, ident.1 = 20, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C21.M <- FindMarkers(rbc_seurat, ident.1 = 21, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc",  only.pos = TRUE)
+C22.M <- FindMarkers(rbc_seurat, ident.1 = 22, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C23.M <- FindMarkers(rbc_seurat, ident.1 = 23, min.pct= 0.1, logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C24.M <- FindMarkers(rbc_seurat, ident.1 = 24, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C25.M <- FindMarkers(rbc_seurat, ident.1 = 25, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C26.M <- FindMarkers(rbc_seurat, ident.1 = 26, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+C27.M <- FindMarkers(rbc_seurat, ident.1 = 27, min.pct= 0.1,  logfc.threshold = 0.0025, test.use = "roc", only.pos = TRUE)
+```
+
+## Adding Gene Annotations
+```{r}
+annotations <- read.csv("annotation.csv")
+
+C0.M <- C0.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C1.M <- C1.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C2.M <- C2.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C3.M <- C3.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C4.M <- C4.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C5.M <- C5.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C6.M <- C6.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C7.M <- C7.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C8.M <- C8.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C9.M <- C9.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C10.M <- C10.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C11.M <- C11.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C12.M <- C12.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C13.M <- C13.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C14.M <- C14.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C15.M <- C15.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C16.M <- C16.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C17.M <- C17.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C18.M <- C18.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C19.M <- C19.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C20.M <- C20.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C21.M <- C21.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C22.M <- C22.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C23.M <- C23.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C24.M <- C24.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+C25.M <- C25.M %>% 
+  rownames_to_column(var="gene") %>% 
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+            by = c("gene" = "gene_name"))
+```
+
+## trying out genes
+```{r}
+FeaturePlot(rbc_seurat, features = c('UBB', 'SLC25A39', 'HBB', 'HBA2', 'HBA1', 'HBD','HBG2', 'HEMGN', 'BNIP3L', 'SLC25A37', 'YBX1', 'VCAN'), cols = c('lightgrey', 'red'), ncol = 3)
+
+VlnPlot(rbc_seurat, features = c('UBB', 'SLC25A39', 'HBB', 'HBA2', 'HBA1', 'UBA52','HBG2', 'HEMGN', 'BNIP3L','GABRE', 'ACVR2B', 'GPM6A'), ncol = 3) 
+
+FeaturePlot(rbc_seurat, features = c('BNIP3L', 'YBX1', 'HEMGN', 'HBD'))
+VlnPlot(rbc_seurat, features = 'ACVR2B')
+```
+
+## Rename all identities
+```{r}
+RB2 <- RenameIdents(rbc_seurat, 
+                    "0" = "Stress Erythroids",
+                    "1" = "Erythroblasts",
+                    "2" = "Early Reticulocytes",
+                    "3" = "Late Reticulocytes",
+                    "4" = "Stress Erythroids",
+                    "5" = "Erythrocytes",
+                    "6" = "Erythrocytes",
+                    "7" = "Erythroblasts",
+                    "8" = "Stress Erythroids",
+                    "9" = "Erythrocytes",
+                    "10" = "Stress Erythroids",
+                    "11" = "MEPs",
+                    "12" = "Late Reticulocytes",
+                    "13" = "Stress Erythroids",
+                    "14" = "Stress Erythroids",
+                    "15" = "Erythrocytes",
+                    "16" = "Stress Erythroids",
+                    "17" = "Late Reticulocytes",
+                    "18" = "Late Reticulocytes",
+                    "19" = "Erythrocytes",
+                    "20" = "Stress Erythroids",
+                    "21" = "HSCs",
+                    "22" = "F Cells",
+                    "23" = "D Cells",
+                    "24" = "Stress Erythroids",
+                    "25" = "Stress Erythroids")
+```
+
+## Visualizations
+## umap plot
+```{r}
+DimPlot(RB2, reduction = "tsne", label = TRUE, label.size = 4, repel = TRUE)
+```
+
+## heatmap
+```{r}
+DoHeatmap(RB2, features = top_markers, size = 4.5, angle = 45)
+```
+
+## DotPlot
+```{r}
+DotPlot(RB2, features = top_markers, cols = c('gray', 'red')) + 
+  theme(axis.text = element_text(angle = 45, hjust = 1))
+```
+
+## Saving clustered seurat object
+```{r}
+saveRDS(rbc_seurat, file="../Integrated_data_on_RBC/rbc_seurat_integrated.rds")
+```
+
+
+

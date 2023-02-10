@@ -1,0 +1,142 @@
+---
+title: "Clustering Analysis of scRNAseq data (subpopulation type)"
+author: "Mayen Kalu(Inim)"
+date: "2022-10-1"
+output: html_document
+---
+# Load package dependencies
+```{r}
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(ggplot2)
+library(ggrepel)
+library(Matrix)
+library(BiocManager)
+library(GEOquery)
+```
+
+# Load datasets into R
+# This is a scRNAseq obtained from NCBI GEO, published by Xie et al., 2021
+```{r}
+BC.raw <- read.csv(file = "C:/Users/Mayen/Documents/RBC_scRNAseq/clustering_analysis_rbc/GSE149938_bm/umi_matrix.csv")
+BC.data <- Matrix(t(as.matrix(BC.raw)))
+colnames(BC.data) %>%  head
+dim(BC.data)
+BC.meta <- GEOquery::getGEO("GSE149938", destdir = "C:/Users/Mayen/Documents/RBC_scRNAseq/clustering_analysis_rbc/GSE149938_bm/")
+BC.meta
+```
+
+# Load merged data into a seurat object
+```{r}
+BC <- CreateSeuratObject(counts = BC.data, 
+                         project = "RBC", 
+                         min.cells = 0,
+                         min.features = 0)
+BC
+VlnPlot(BC, features = "nFeature_RNA")
+```
+
+# Subset the data
+```{r}
+EC <- subset(BC, idents = 'ery')
+EC
+VlnPlot(EC, features = "nFeature_RNA")
+```
+
+# QC Metrics
+# % MT
+```{r}
+EC[['percent.mt']] <- PercentageFeatureSet(EC, pattern = '^MT-')
+EC[["percent.rbp"]] <- PercentageFeatureSet(EC, pattern = "^RP[SL]")
+head(EC@meta.data, 3)
+```
+
+# Visualize QC metrics 
+# as violin plot
+```{r}
+VlnPlot(EC, features = c('nFeature_RNA', 'nCount_RNA', 'percent.mt', 'percent.rbp'), ncol = 4)
+```
+
+# as ridge plot
+```{r}
+RidgePlot(EC, features = c('nFeature_RNA', 'nCount_RNA', 'percent.mt', 'percent.rbp'), ncol = 1)
+```
+
+# To visualize feature-feature relationships, FeatureScatter is used
+```{r}
+plot1 <- FeatureScatter(EC, feature1 = "nCount_RNA", feature2 = "percent.mt") 
+plot2 <- FeatureScatter(EC, feature1 = "nCount_RNA", feature2 = "percent.rbp")
+plot3 <- FeatureScatter(EC, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2 + plot3
+```
+
+# SCTransform
+```{r}
+EC <- SCTransform(EC, vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+# Visualizing the top 10 of highly variable features
+```{r}
+vf10 <- head(VariableFeatures(EC), 10)
+vf10
+plot4 <- VariableFeaturePlot(EC)
+plot5 <- LabelPoints(plot = plot4, points = vf10, repel = TRUE)
+plot4
+plot5
+```
+
+# PCA analysis
+```{r}
+EC <- RunPCA(EC)
+print(EC[["pca"]], dims = 1:20, nfeatures = 10)
+VizDimLoadings(EC, dims = 1:2, reduction = 'pca')
+DimPlot(EC, reduction = 'pca')
+DimHeatmap(EC, dims = 1:6, cells = 500, balanced = TRUE)
+```
+
+# Determine dimensionality of the data
+```{r}
+ElbowPlot(EC)
+```
+
+# Clustering Analysis
+# Determine the K-nearest neighbor graph
+```{r}
+EC <- FindNeighbors(EC, dims = 1:11)
+```
+
+# Determine the clusters for various resolutions  
+```{r}
+EC <- FindClusters(EC)
+View(EC@meta.data)
+head(Idents(EC), 5) 
+```
+
+# Run non-linear dimensional reduction (UMAP)
+```{r}
+EC <- RunUMAP(EC, reduction = "pca", dims = 1:11)
+DimPlot(EC, reduction = "umap", label = TRUE, label.size = 4)
+```
+
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+```{r}
+n_cells <- FetchData(EC, 
+                     vars = c("ident", "orig.ident")) %>%
+  dplyr::count(ident, orig.ident) %>%
+  tidyr::spread(ident, n)
+View(n_cells)
+```
+
+# Visualize metrics in EC@meta.data
+```{r}
+metrics <-  c("nCount_SCT", "nFeature_SCT", "percent.mt", "percent.rbp")
+FeaturePlot(EC, 
+            reduction = "umap",
+            features = metrics,
+            pt.size = 0.4, 
+            sort.cell = TRUE,
+            min.cutoff = 'q10',
+            label = FALSE)
+```
+
