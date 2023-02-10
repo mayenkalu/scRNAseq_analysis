@@ -1,12 +1,12 @@
 ---
 title: "integrated_clustering"
-author: "Mayen Kalu(Inim)"
-date: "2022-09-25"
-output: html_document
+Author: "Mayen Kalu(Inim)"
+Date: "2022-09-25"
+Output: html_document
 ---
 The `scRNAseq` datasets (published by Yang _et al_., 2021) with accession number GSE173193, were downloaded from GEO NCBI.
-This analysis is associated to a CZI project **Nigerian Maternal Atlas to Improve Birth Outcomes**.
-This part is my part contribution to the project.
+This analysis is associated to a APTI/NHI project **Transcriptomic profiling of reticuloytes**.
+This part is my sole contribution to the project.
 ## Load package dependencies
 ```{r}
 library(Seurat)
